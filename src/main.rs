@@ -94,10 +94,10 @@ impl App {
     /// # Returns
     ///
     /// A new App instance with slides parsed from the markdown content
-    fn new(markdown_content: &str) -> Self {
+    fn new(markdown_content: &str, terminal_width: u16) -> Self {
         let theme_set = ThemeSet::load_defaults();
         let syntax_set = SyntaxSet::load_defaults_newlines();
-        let slides = parse_markdown_to_slides(markdown_content, &theme_set, &syntax_set);
+        let slides = parse_markdown_to_slides(markdown_content, &theme_set, &syntax_set, terminal_width);
         App {
             slides,
             current_slide: 0,
@@ -109,9 +109,9 @@ impl App {
 
     /// Advances to the next slide if available.
     ///
-    /// Does nothing if already on the last slide.
+    /// Does nothing if already on the last slide or if no slides exist.
     fn next_slide(&mut self) {
-        if self.current_slide < self.slides.len() - 1 {
+        if !self.slides.is_empty() && self.current_slide < self.slides.len() - 1 {
             self.current_slide += 1;
             self.scroll_offset = 0;
         }
@@ -131,9 +131,11 @@ impl App {
     ///
     /// Increases the scroll offset to show content below the current view.
     fn scroll_down(&mut self) {
-        let max_scroll = self.slides[self.current_slide].lines.len().saturating_sub(1);
-        if self.scroll_offset < max_scroll {
-            self.scroll_offset += 1;
+        if !self.slides.is_empty() {
+            let max_scroll = self.slides[self.current_slide].lines.len().saturating_sub(1);
+            if self.scroll_offset < max_scroll {
+                self.scroll_offset += 1;
+            }
         }
     }
 
@@ -150,9 +152,17 @@ impl App {
     ///
     /// # Returns
     ///
-    /// A reference to the current slide's content
+    /// A reference to the current slide's content, or a default empty slide if no slides exist
     fn current_slide_content(&self) -> &Text<'static> {
-        &self.slides[self.current_slide]
+        if self.slides.is_empty() {
+            // Return a static reference to an empty text - we'll handle this in the caller
+            static EMPTY_SLIDE: std::sync::LazyLock<Text<'static>> = std::sync::LazyLock::new(|| {
+                Text::from("No slides found")
+            });
+            &EMPTY_SLIDE
+        } else {
+            &self.slides[self.current_slide]
+        }
     }
 
     /// Returns a formatted string showing current slide position.
@@ -161,7 +171,11 @@ impl App {
     ///
     /// A string in the format "current/total" (e.g., "3/10")
     fn slide_info(&self) -> String {
-        format!("{}/{}", self.current_slide + 1, self.slides.len())
+        if self.slides.is_empty() {
+            "0/0".to_string()
+        } else {
+            format!("{}/{}", self.current_slide + 1, self.slides.len())
+        }
     }
 }
 
@@ -175,6 +189,7 @@ impl App {
 /// * `markdown` - The raw markdown content to parse
 /// * `theme_set` - Syntax highlighting themes
 /// * `syntax_set` - Syntax definitions for highlighting
+/// * `terminal_width` - Width of the terminal for centering H1 headings
 ///
 /// # Returns
 ///
@@ -192,6 +207,7 @@ fn parse_markdown_to_slides(
     markdown: &str,
     theme_set: &ThemeSet,
     syntax_set: &SyntaxSet,
+    terminal_width: u16,
 ) -> Vec<Text<'static>> {
     let mut options = Options::empty();
     options.insert(Options::ENABLE_TABLES);
@@ -207,6 +223,11 @@ fn parse_markdown_to_slides(
     let mut code_block_lang: Option<String> = None;
     let mut code_block_content = String::new();
     let mut in_table = false;
+    let mut in_list = false;
+    let mut table_rows: Vec<Vec<String>> = Vec::new();
+    let mut current_table_row: Vec<String> = Vec::new();
+    let mut current_cell_content = String::new();
+    let mut in_table_header = false;
 
     let theme = &theme_set.themes["base16-ocean.dark"];
 
@@ -218,9 +239,8 @@ fn parse_markdown_to_slides(
                 let text_width: usize = line.spans.iter()
                     .map(|span| span.content.chars().count())
                     .sum();
-                let terminal_width = 80; // Assume 80 chars width, could be made dynamic
-                let padding = if terminal_width > text_width {
-                    (terminal_width - text_width) / 2
+                let padding = if terminal_width as usize > text_width {
+                    (terminal_width as usize - text_width) / 2
                 } else {
                     0
                 };
@@ -231,6 +251,12 @@ fn parse_markdown_to_slides(
                 }
             }
             lines.push(line);
+        }
+    };
+
+    let add_spacing = |lines: &mut Vec<Line<'static>>| {
+        if !lines.is_empty() {
+            lines.push(Line::from(""));
         }
     };
 
@@ -260,11 +286,14 @@ fn parse_markdown_to_slides(
             }
             MarkdownEvent::End(TagEnd::Heading(_)) => {
                 push_current_line(&mut current_slide_lines, &mut current_line_spans, heading_level == HeadingLevel::H1);
+                add_spacing(&mut current_slide_lines);
                 in_heading = false;
             }
             MarkdownEvent::Text(text) => {
                 if in_code_block {
                     code_block_content.push_str(&text);
+                } else if in_table {
+                    current_cell_content.push_str(&text);
                 } else {
                     let mut style = Style::default().fg(Color::White);
 
@@ -287,8 +316,6 @@ fn parse_markdown_to_slides(
                         style = style.add_modifier(Modifier::BOLD);
                     } else if in_emphasis {
                         style = style.add_modifier(Modifier::ITALIC);
-                    } else if in_table {
-                        style = Style::default().fg(Color::Cyan); // Light blue for table content
                     }
 
                     current_line_spans.push(Span::styled(text.to_string(), style));
@@ -302,16 +329,24 @@ fn parse_markdown_to_slides(
             MarkdownEvent::End(TagEnd::Paragraph) => {
                 if !in_table {
                     push_current_line(&mut current_slide_lines, &mut current_line_spans, false);
+                    add_spacing(&mut current_slide_lines);
                 }
             }
             MarkdownEvent::Start(Tag::List(_)) => {
                 push_current_line(&mut current_slide_lines, &mut current_line_spans, false);
+                in_list = true;
             }
             MarkdownEvent::Start(Tag::Item) => {
                 current_line_spans.push(Span::styled("• ", Style::default().fg(Color::Yellow)));
             }
             MarkdownEvent::End(TagEnd::Item) => {
                 push_current_line(&mut current_slide_lines, &mut current_line_spans, false);
+            }
+            MarkdownEvent::End(TagEnd::List(_)) => {
+                if in_list {
+                    add_spacing(&mut current_slide_lines);
+                    in_list = false;
+                }
             }
             MarkdownEvent::Start(Tag::Strong) => {
                 in_strong = true;
@@ -326,10 +361,14 @@ fn parse_markdown_to_slides(
                 in_emphasis = false;
             }
             MarkdownEvent::Code(code) => {
-                current_line_spans.push(Span::styled(
-                    format!("`{}`", code),
-                    Style::default().fg(Color::Green).bg(Color::Rgb(40, 40, 40)),
-                ));
+                if in_table {
+                    current_cell_content.push_str(&format!("`{}`", code));
+                } else {
+                    current_line_spans.push(Span::styled(
+                        format!("`{}`", code),
+                        Style::default().fg(Color::Green).bg(Color::Rgb(40, 40, 40)),
+                    ));
+                }
             }
             MarkdownEvent::Start(Tag::CodeBlock(info)) => {
                 push_current_line(&mut current_slide_lines, &mut current_line_spans, false);
@@ -350,67 +389,116 @@ fn parse_markdown_to_slides(
                 in_code_block = false;
 
                 if let Some(lang) = &code_block_lang {
-                    let syntax_extension = match lang.as_str() {
-                        "rust" => Some("rs"),
-                        "python" | "py" => Some("py"),
-                        _ => None,
-                    };
+                    // Try to find syntax by the language name first, then by common extensions
+                    let syntax = syntax_set.find_syntax_by_token(lang)
+                        .or_else(|| {
+                            // Map common language names to their file extensions
+                            let extension = match lang.as_str() {
+                                "rust" | "rs" => "rs",
+                                "python" | "py" => "py",
+                                "javascript" | "js" => "js",
+                                "typescript" | "ts" => "ts",
+                                "java" => "java",
+                                "c" => "c",
+                                "cpp" | "c++" | "cxx" => "cpp",
+                                "csharp" | "c#" | "cs" => "cs",
+                                "go" | "golang" => "go",
+                                "html" => "html",
+                                "css" => "css",
+                                "json" => "json",
+                                "xml" => "xml",
+                                "yaml" | "yml" => "yaml",
+                                "toml" => "toml",
+                                "markdown" | "md" => "md",
+                                "dockerfile" | "docker" => "Dockerfile",
+                                "sql" => "sql",
+                                "shell" | "bash" | "sh" => "sh",
+                                "php" => "php",
+                                "ruby" | "rb" => "rb",
+                                "perl" | "pl" => "pl",
+                                "swift" => "swift",
+                                "kotlin" | "kt" => "kt",
+                                "scala" => "scala",
+                                "haskell" | "hs" => "hs",
+                                "elixir" | "ex" => "ex",
+                                "erlang" | "erl" => "erl",
+                                "clojure" | "clj" => "clj",
+                                "lua" => "lua",
+                                "r" => "r",
+                                "matlab" => "m",
+                                "powershell" | "ps1" => "ps1",
+                                "vim" => "vim",
+                                "tex" | "latex" => "tex",
+                                "makefile" | "make" => "Makefile",
+                                "nginx" => "conf",
+                                "apache" => "conf",
+                                "ini" => "ini",
+                                "properties" => "properties",
+                                "groovy" => "groovy",
+                                "dart" => "dart",
+                                "assembly" | "asm" => "asm",
+                                "lisp" => "lisp",
+                                "scheme" => "scm",
+                                "ocaml" => "ml",
+                                "fsharp" | "f#" => "fs",
+                                "pascal" => "pas",
+                                "fortran" => "f90",
+                                "cobol" => "cob",
+                                "ada" => "ada",
+                                "verilog" => "v",
+                                "vhdl" => "vhd",
+                                _ => lang, // Fall back to using the language name as extension
+                            };
+                            syntax_set.find_syntax_by_extension(extension)
+                        });
                     
-                    if let Some(ext) = syntax_extension {
-                        if let Some(syntax) = syntax_set.find_syntax_by_extension(ext) {
-                            let mut highlighter = HighlightLines::new(syntax, theme);
+                    if let Some(syntax) = syntax {
+                        let mut highlighter = HighlightLines::new(syntax, theme);
 
-                            for line in LinesWithEndings::from(&code_block_content) {
-                                let ranges = highlighter
-                                    .highlight_line(line, syntax_set)
-                                    .unwrap_or_default();
-                                let mut line_spans = Vec::new();
+                        for line in LinesWithEndings::from(&code_block_content) {
+                            let ranges = highlighter
+                                .highlight_line(line, syntax_set)
+                                .unwrap_or_default();
+                            let mut line_spans = Vec::new();
 
-                                // If highlighting fails or produces no ranges, preserve the original line
-                                if ranges.is_empty() {
-                                    line_spans.push(Span::styled(
-                                        line.to_string(),
-                                        Style::default().fg(Color::Green),
-                                    ));
-                                } else {
-                                    for (style, text) in ranges {
-                                        let fg_color = Color::Rgb(
-                                            style.foreground.r,
-                                            style.foreground.g,
-                                            style.foreground.b,
-                                        );
-                                        let mut ratatui_style = Style::default().fg(fg_color);
-
-                                        if style
-                                            .font_style
-                                            .contains(syntect::highlighting::FontStyle::BOLD)
-                                        {
-                                            ratatui_style = ratatui_style.add_modifier(Modifier::BOLD);
-                                        }
-                                        if style
-                                            .font_style
-                                            .contains(syntect::highlighting::FontStyle::ITALIC)
-                                        {
-                                            ratatui_style =
-                                                ratatui_style.add_modifier(Modifier::ITALIC);
-                                        }
-
-                                        // Preserve the exact text including whitespace
-                                        line_spans.push(Span::styled(text.to_string(), ratatui_style));
-                                    }
-                                }
-
-                                current_slide_lines.push(Line::from(line_spans));
-                            }
-                        } else {
-                            for line in code_block_content.lines() {
-                                current_slide_lines.push(Line::from(Span::styled(
+                            // If highlighting fails or produces no ranges, preserve the original line
+                            if ranges.is_empty() {
+                                line_spans.push(Span::styled(
                                     line.to_string(),
                                     Style::default().fg(Color::Green),
-                                )));
+                                ));
+                            } else {
+                                for (style, text) in ranges {
+                                    let fg_color = Color::Rgb(
+                                        style.foreground.r,
+                                        style.foreground.g,
+                                        style.foreground.b,
+                                    );
+                                    let mut ratatui_style = Style::default().fg(fg_color);
+
+                                    if style
+                                        .font_style
+                                        .contains(syntect::highlighting::FontStyle::BOLD)
+                                    {
+                                        ratatui_style = ratatui_style.add_modifier(Modifier::BOLD);
+                                    }
+                                    if style
+                                        .font_style
+                                        .contains(syntect::highlighting::FontStyle::ITALIC)
+                                    {
+                                        ratatui_style =
+                                            ratatui_style.add_modifier(Modifier::ITALIC);
+                                    }
+
+                                    // Preserve the exact text including whitespace
+                                    line_spans.push(Span::styled(text.to_string(), ratatui_style));
+                                }
                             }
+
+                            current_slide_lines.push(Line::from(line_spans));
                         }
                     } else {
+                        // Fallback to unstyled code if no syntax is found
                         for line in code_block_content.lines() {
                             current_slide_lines.push(Line::from(Span::styled(
                                 line.to_string(),
@@ -429,35 +517,82 @@ fn parse_markdown_to_slides(
 
                 code_block_content.clear();
                 code_block_lang = None;
+                add_spacing(&mut current_slide_lines);
             }
             MarkdownEvent::Start(Tag::Table(_)) => {
                 push_current_line(&mut current_slide_lines, &mut current_line_spans, false);
                 in_table = true;
+                table_rows.clear();
             }
             MarkdownEvent::End(TagEnd::Table) => {
-                push_current_line(&mut current_slide_lines, &mut current_line_spans, false);
+                // Render the complete table
+                if !table_rows.is_empty() {
+                    // Calculate column widths
+                    let num_cols = table_rows.iter().map(|row| row.len()).max().unwrap_or(0);
+                    let mut col_widths = vec![0; num_cols];
+                    
+                    for row in &table_rows {
+                        for (i, cell) in row.iter().enumerate() {
+                            if i < col_widths.len() {
+                                col_widths[i] = col_widths[i].max(cell.len());
+                            }
+                        }
+                    }
+                    
+                    // Render table rows
+                    for (row_idx, row) in table_rows.iter().enumerate() {
+                        let mut line_spans = Vec::new();
+                        line_spans.push(Span::styled("│ ", Style::default().fg(Color::Gray)));
+                        
+                        for (col_idx, cell) in row.iter().enumerate() {
+                            let width = col_widths.get(col_idx).unwrap_or(&10);
+                            let padded_cell = format!("{:<width$}", cell, width = width);
+                            
+                            line_spans.push(Span::styled(padded_cell, Style::default().fg(Color::White)));
+                            line_spans.push(Span::styled(" │ ", Style::default().fg(Color::Gray)));
+                        }
+                        
+                        current_slide_lines.push(Line::from(line_spans));
+                        
+                        // Add separator line between all rows (except after the last row)
+                        if row_idx < table_rows.len() - 1 {
+                            let mut sep_spans = Vec::new();
+                            sep_spans.push(Span::styled("├", Style::default().fg(Color::Gray)));
+                            for (i, width) in col_widths.iter().enumerate() {
+                                sep_spans.push(Span::styled("─".repeat(width + 2), Style::default().fg(Color::Gray)));
+                                if i < col_widths.len() - 1 {
+                                    sep_spans.push(Span::styled("┼", Style::default().fg(Color::Gray)));
+                                }
+                            }
+                            sep_spans.push(Span::styled("┤", Style::default().fg(Color::Gray)));
+                            current_slide_lines.push(Line::from(sep_spans));
+                        }
+                    }
+                }
+                
+                add_spacing(&mut current_slide_lines);
                 in_table = false;
+                in_table_header = false;
             }
             MarkdownEvent::Start(Tag::TableHead) => {
-                // Table header - no special handling needed
+                in_table_header = true;
             }
             MarkdownEvent::End(TagEnd::TableHead) => {
-                push_current_line(&mut current_slide_lines, &mut current_line_spans, false);
+                in_table_header = false;
             }
             MarkdownEvent::Start(Tag::TableRow) => {
-                // Start new row
+                current_table_row.clear();
             }
             MarkdownEvent::End(TagEnd::TableRow) => {
-                push_current_line(&mut current_slide_lines, &mut current_line_spans, false);
+                table_rows.push(current_table_row.clone());
+                current_table_row.clear();
             }
             MarkdownEvent::Start(Tag::TableCell) => {
-                // Add some spacing between cells
-                if !current_line_spans.is_empty() {
-                    current_line_spans.push(Span::styled(" | ", Style::default().fg(Color::Gray)));
-                }
+                current_cell_content.clear();
             }
             MarkdownEvent::End(TagEnd::TableCell) => {
-                // Cell content already added via Text events
+                current_table_row.push(current_cell_content.trim().to_string());
+                current_cell_content.clear();
             }
             MarkdownEvent::SoftBreak | MarkdownEvent::HardBreak => {
                 if !in_table {
@@ -589,7 +724,8 @@ fn main() -> Result<(), Box<dyn Error>> {
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
-    let app = App::new(&markdown_content);
+    let terminal_size = terminal.size()?;
+    let app = App::new(&markdown_content, terminal_size.width);
     let res = run_app(&mut terminal, app);
 
     disable_raw_mode()?;

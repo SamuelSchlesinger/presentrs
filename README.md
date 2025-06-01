@@ -14,8 +14,8 @@ cargo run README.md  # This file becomes a slideshow!
 
 | Key | Action |
 |-----|--------|
-| `→`, `l`, `Space` | Next slide |
-| `←`, `h` | Previous slide |
+| `->`, `l`, `Space` | Next slide |
+| `<-`, `h` | Previous slide |
 | `q`, `Esc` | Quit |
 
 ---
@@ -34,7 +34,7 @@ Everything between H1 headings becomes part of the same slide:
 
 H2, H3, H4, H5, H6 headings don't create new slides - they organize content within the current slide.
 
-Press `→` to see the next slide!
+Press `->` to see the next slide!
 
 # Content Types Supported
 
@@ -173,6 +173,23 @@ if line.starts_with("# ") {
 | Emphasis | ✅ | *italic* and **bold** |
 | Code | ✅ | `inline` and ```blocks``` |
 | Tables | ✅ | Like this one! |
+
+## Supported Languages for Syntax Highlighting
+
+**Systems Programming**: rust, c, cpp/c++/cxx, go, assembly/asm  
+**Web Development**: javascript/js, typescript/ts, html, css, php  
+**Enterprise**: java, csharp/c#/cs, scala, kotlin/kt, groovy  
+**Scripting**: python/py, ruby/rb, perl/pl, lua, powershell/ps1, shell/bash/sh  
+**Functional**: haskell/hs, elixir/ex, erlang/erl, clojure/clj, ocaml, fsharp/f#, lisp, scheme  
+**Mobile**: swift, dart  
+**Data/Config**: json, xml, yaml/yml, toml, ini, properties  
+**Markup/Documentation**: markdown/md, tex/latex  
+**Database**: sql  
+**Build/Config**: dockerfile/docker, makefile/make, nginx, apache  
+**Scientific**: r, matlab  
+**Legacy**: cobol, pascal, fortran, ada  
+**Hardware**: verilog, vhdl  
+**Other**: vim
 
 ## Built With Rust
 
