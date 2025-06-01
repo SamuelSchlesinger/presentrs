@@ -16,6 +16,8 @@
 //!
 //! - `→`, `l`, `Space`: Next slide
 //! - `←`, `h`: Previous slide
+//! - `↑`, `k`: Scroll up within slide
+//! - `↓`, `j`: Scroll down within slide
 //! - `q`, `Esc`: Quit
 //!
 //! ## Markdown Support
@@ -72,6 +74,8 @@ struct App {
     slides: Vec<Text<'static>>,
     /// Index of the currently displayed slide (0-based)
     current_slide: usize,
+    /// Vertical scroll offset for the current slide
+    scroll_offset: usize,
     /// Syntax highlighting theme set
     #[allow(dead_code)]
     theme_set: ThemeSet,
@@ -97,6 +101,7 @@ impl App {
         App {
             slides,
             current_slide: 0,
+            scroll_offset: 0,
             theme_set,
             syntax_set,
         }
@@ -108,6 +113,7 @@ impl App {
     fn next_slide(&mut self) {
         if self.current_slide < self.slides.len() - 1 {
             self.current_slide += 1;
+            self.scroll_offset = 0;
         }
     }
 
@@ -117,6 +123,26 @@ impl App {
     fn prev_slide(&mut self) {
         if self.current_slide > 0 {
             self.current_slide -= 1;
+            self.scroll_offset = 0;
+        }
+    }
+
+    /// Scrolls down within the current slide.
+    ///
+    /// Increases the scroll offset to show content below the current view.
+    fn scroll_down(&mut self) {
+        let max_scroll = self.slides[self.current_slide].lines.len().saturating_sub(1);
+        if self.scroll_offset < max_scroll {
+            self.scroll_offset += 1;
+        }
+    }
+
+    /// Scrolls up within the current slide.
+    ///
+    /// Decreases the scroll offset to show content above the current view.
+    fn scroll_up(&mut self) {
+        if self.scroll_offset > 0 {
+            self.scroll_offset -= 1;
         }
     }
 
@@ -161,7 +187,7 @@ impl App {
 /// - Lists (bulleted with •)
 /// - Emphasis (*italic*, **bold**) with proper styling
 /// - Inline code (`code`) with styling
-/// - Code blocks (```code```) with Rust syntax highlighting
+/// - Code blocks with syntax highlighting (```rust```, ```python```)
 fn parse_markdown_to_slides(
     markdown: &str,
     theme_set: &ThemeSet,
@@ -184,9 +210,27 @@ fn parse_markdown_to_slides(
 
     let theme = &theme_set.themes["base16-ocean.dark"];
 
-    let push_current_line = |lines: &mut Vec<Line<'static>>, spans: &mut Vec<Span<'static>>| {
+    let push_current_line = |lines: &mut Vec<Line<'static>>, spans: &mut Vec<Span<'static>>, is_h1: bool| {
         if !spans.is_empty() {
-            lines.push(Line::from(std::mem::take(spans)));
+            let mut line = Line::from(std::mem::take(spans));
+            if is_h1 {
+                // Center the H1 line by calculating padding
+                let text_width: usize = line.spans.iter()
+                    .map(|span| span.content.chars().count())
+                    .sum();
+                let terminal_width = 80; // Assume 80 chars width, could be made dynamic
+                let padding = if terminal_width > text_width {
+                    (terminal_width - text_width) / 2
+                } else {
+                    0
+                };
+                
+                if padding > 0 {
+                    let padding_span = Span::raw(" ".repeat(padding));
+                    line.spans.insert(0, padding_span);
+                }
+            }
+            lines.push(line);
         }
     };
 
@@ -202,7 +246,7 @@ fn parse_markdown_to_slides(
                 level: HeadingLevel::H1,
                 ..
             }) => {
-                push_current_line(&mut current_slide_lines, &mut current_line_spans);
+                push_current_line(&mut current_slide_lines, &mut current_line_spans, false);
                 if !current_slide_lines.is_empty() {
                     finish_slide(&mut slides, &mut current_slide_lines);
                 }
@@ -210,12 +254,12 @@ fn parse_markdown_to_slides(
                 heading_level = HeadingLevel::H1;
             }
             MarkdownEvent::Start(Tag::Heading { level, .. }) => {
-                push_current_line(&mut current_slide_lines, &mut current_line_spans);
+                push_current_line(&mut current_slide_lines, &mut current_line_spans, false);
                 in_heading = true;
                 heading_level = level;
             }
             MarkdownEvent::End(TagEnd::Heading(_)) => {
-                push_current_line(&mut current_slide_lines, &mut current_line_spans);
+                push_current_line(&mut current_slide_lines, &mut current_line_spans, heading_level == HeadingLevel::H1);
                 in_heading = false;
             }
             MarkdownEvent::Text(text) => {
@@ -252,22 +296,22 @@ fn parse_markdown_to_slides(
             }
             MarkdownEvent::Start(Tag::Paragraph) => {
                 if !in_table {
-                    push_current_line(&mut current_slide_lines, &mut current_line_spans);
+                    push_current_line(&mut current_slide_lines, &mut current_line_spans, false);
                 }
             }
             MarkdownEvent::End(TagEnd::Paragraph) => {
                 if !in_table {
-                    push_current_line(&mut current_slide_lines, &mut current_line_spans);
+                    push_current_line(&mut current_slide_lines, &mut current_line_spans, false);
                 }
             }
             MarkdownEvent::Start(Tag::List(_)) => {
-                push_current_line(&mut current_slide_lines, &mut current_line_spans);
+                push_current_line(&mut current_slide_lines, &mut current_line_spans, false);
             }
             MarkdownEvent::Start(Tag::Item) => {
                 current_line_spans.push(Span::styled("• ", Style::default().fg(Color::Yellow)));
             }
             MarkdownEvent::End(TagEnd::Item) => {
-                push_current_line(&mut current_slide_lines, &mut current_line_spans);
+                push_current_line(&mut current_slide_lines, &mut current_line_spans, false);
             }
             MarkdownEvent::Start(Tag::Strong) => {
                 in_strong = true;
@@ -288,7 +332,7 @@ fn parse_markdown_to_slides(
                 ));
             }
             MarkdownEvent::Start(Tag::CodeBlock(info)) => {
-                push_current_line(&mut current_slide_lines, &mut current_line_spans);
+                push_current_line(&mut current_slide_lines, &mut current_line_spans, false);
                 in_code_block = true;
                 code_block_lang = match info {
                     pulldown_cmark::CodeBlockKind::Indented => None,
@@ -306,8 +350,14 @@ fn parse_markdown_to_slides(
                 in_code_block = false;
 
                 if let Some(lang) = &code_block_lang {
-                    if lang == "rust" {
-                        if let Some(syntax) = syntax_set.find_syntax_by_extension("rs") {
+                    let syntax_extension = match lang.as_str() {
+                        "rust" => Some("rs"),
+                        "python" | "py" => Some("py"),
+                        _ => None,
+                    };
+                    
+                    if let Some(ext) = syntax_extension {
+                        if let Some(syntax) = syntax_set.find_syntax_by_extension(ext) {
                             let mut highlighter = HighlightLines::new(syntax, theme);
 
                             for line in LinesWithEndings::from(&code_block_content) {
@@ -381,24 +431,24 @@ fn parse_markdown_to_slides(
                 code_block_lang = None;
             }
             MarkdownEvent::Start(Tag::Table(_)) => {
-                push_current_line(&mut current_slide_lines, &mut current_line_spans);
+                push_current_line(&mut current_slide_lines, &mut current_line_spans, false);
                 in_table = true;
             }
             MarkdownEvent::End(TagEnd::Table) => {
-                push_current_line(&mut current_slide_lines, &mut current_line_spans);
+                push_current_line(&mut current_slide_lines, &mut current_line_spans, false);
                 in_table = false;
             }
             MarkdownEvent::Start(Tag::TableHead) => {
                 // Table header - no special handling needed
             }
             MarkdownEvent::End(TagEnd::TableHead) => {
-                push_current_line(&mut current_slide_lines, &mut current_line_spans);
+                push_current_line(&mut current_slide_lines, &mut current_line_spans, false);
             }
             MarkdownEvent::Start(Tag::TableRow) => {
                 // Start new row
             }
             MarkdownEvent::End(TagEnd::TableRow) => {
-                push_current_line(&mut current_slide_lines, &mut current_line_spans);
+                push_current_line(&mut current_slide_lines, &mut current_line_spans, false);
             }
             MarkdownEvent::Start(Tag::TableCell) => {
                 // Add some spacing between cells
@@ -411,14 +461,14 @@ fn parse_markdown_to_slides(
             }
             MarkdownEvent::SoftBreak | MarkdownEvent::HardBreak => {
                 if !in_table {
-                    push_current_line(&mut current_slide_lines, &mut current_line_spans);
+                    push_current_line(&mut current_slide_lines, &mut current_line_spans, false);
                 }
             }
             _ => {}
         }
     }
 
-    push_current_line(&mut current_slide_lines, &mut current_line_spans);
+    push_current_line(&mut current_slide_lines, &mut current_line_spans, false);
     finish_slide(&mut slides, &mut current_slide_lines);
 
     if slides.is_empty() {
@@ -444,7 +494,18 @@ fn ui(f: &mut Frame, app: &App) {
         .split(f.area());
 
     let slide_content = app.current_slide_content();
-    let paragraph = Paragraph::new(slide_content.clone())
+    
+    // Apply scroll offset to the content
+    let visible_lines: Vec<_> = slide_content
+        .lines
+        .iter()
+        .skip(app.scroll_offset)
+        .cloned()
+        .collect();
+    
+    let scrolled_content = Text::from(visible_lines);
+    
+    let paragraph = Paragraph::new(scrolled_content)
         .block(
             Block::default()
                 .title("Markdown Slideshow")
@@ -455,7 +516,7 @@ fn ui(f: &mut Frame, app: &App) {
 
     f.render_widget(paragraph, chunks[0]);
 
-    let info_text = format!(" Slide {} | ← → Navigate | q Quit ", app.slide_info());
+    let info_text = format!(" Slide {} | ← → Navigate | ↑ ↓ Scroll | q Quit ", app.slide_info());
     let info = Paragraph::new(info_text)
         .block(Block::default().borders(Borders::ALL))
         .style(Style::default().fg(Color::Yellow));
@@ -482,6 +543,8 @@ fn ui(f: &mut Frame, app: &App) {
 /// - `q`, `Esc`: Quit the application
 /// - `→`, `l`, `Space`: Next slide
 /// - `←`, `h`: Previous slide
+/// - `↑`, `k`: Scroll up within slide
+/// - `↓`, `j`: Scroll down within slide
 fn run_app(terminal: &mut Terminal<CrosstermBackend<Stdout>>, mut app: App) -> io::Result<()> {
     loop {
         terminal.draw(|f| ui(f, &app))?;
@@ -491,6 +554,8 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<Stdout>>, mut app: App) -> i
                 KeyCode::Char('q') | KeyCode::Esc => break,
                 KeyCode::Right | KeyCode::Char('l') | KeyCode::Char(' ') => app.next_slide(),
                 KeyCode::Left | KeyCode::Char('h') => app.prev_slide(),
+                KeyCode::Down | KeyCode::Char('j') => app.scroll_down(),
+                KeyCode::Up | KeyCode::Char('k') => app.scroll_up(),
                 _ => {}
             }
         }
