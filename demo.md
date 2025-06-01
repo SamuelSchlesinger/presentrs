@@ -62,6 +62,17 @@ fn main() {
 }
 ```
 
+# Table Example
+
+Here's a comparison table:
+
+| Feature | Status | Notes |
+|---------|--------|-------|
+| Bold text | ✅ Working | **Looks great** |
+| Italic text | ✅ Working | *Very nice* |
+| Code blocks | ✅ Working | `Highlighted` |
+| Tables | ✅ Working | This table! |
+
 # Thank You!
 
 The presentation tool now renders:
@@ -69,3 +80,4 @@ The presentation tool now renders:
 • `Code` with background highlighting  
 • **Headers** in different colors and sizes
 • Beautiful Rust syntax highlighting
+• **Tables** with proper formatting

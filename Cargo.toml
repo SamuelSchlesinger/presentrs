@@ -9,3 +9,4 @@ crossterm = "0.28"
 pulldown-cmark = "0.12"
 clap = { version = "4.0", features = ["derive"] }
 syntect = "5.0"
+unicode-width = "0.1"

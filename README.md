@@ -176,20 +176,20 @@ if line.starts_with("# ") {
 
 ## Supported Languages for Syntax Highlighting
 
-**Systems Programming**: rust, c, cpp/c++/cxx, go, assembly/asm  
-**Web Development**: javascript/js, typescript/ts, html, css, php  
-**Enterprise**: java, csharp/c#/cs, scala, kotlin/kt, groovy  
-**Scripting**: python/py, ruby/rb, perl/pl, lua, powershell/ps1, shell/bash/sh  
-**Functional**: haskell/hs, elixir/ex, erlang/erl, clojure/clj, ocaml, fsharp/f#, lisp, scheme  
-**Mobile**: swift, dart  
-**Data/Config**: json, xml, yaml/yml, toml, ini, properties  
-**Markup/Documentation**: markdown/md, tex/latex  
-**Database**: sql  
-**Build/Config**: dockerfile/docker, makefile/make, nginx, apache  
-**Scientific**: r, matlab  
-**Legacy**: cobol, pascal, fortran, ada  
-**Hardware**: verilog, vhdl  
-**Other**: vim
+- **Systems Programming**: rust, c, cpp/c++/cxx, go, assembly/asm  
+- **Web Development**: javascript/js, typescript/ts, html, css, php  
+- **Enterprise**: java, csharp/c#/cs, scala, kotlin/kt, groovy  
+- **Scripting**: python/py, ruby/rb, perl/pl, lua, powershell/ps1, shell/bash/sh  
+- **Functional**: haskell/hs, elixir/ex, erlang/erl, clojure/clj, ocaml, fsharp/f#, lisp, scheme  
+- **Mobile**: swift, dart  
+- **Data/Config**: json, xml, yaml/yml, toml, ini, properties  
+- **Markup/Documentation**: markdown/md, tex/latex  
+- **Database**: sql  
+- **Build/Config**: dockerfile/docker, makefile/make, nginx, apache  
+- **Scientific**: r, matlab  
+- **Legacy**: cobol, pascal, fortran, ada  
+- **Hardware**: verilog, vhdl  
+- **Other**: vim
 
 ## Built With Rust
 

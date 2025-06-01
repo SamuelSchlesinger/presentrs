@@ -55,6 +55,7 @@ use std::{
 use syntect::{
     easy::HighlightLines, highlighting::ThemeSet, parsing::SyntaxSet, util::LinesWithEndings,
 };
+use unicode_width::UnicodeWidthStr;
 
 /// Command line arguments for the presentation tool.
 #[derive(Parser)]
@@ -77,10 +78,8 @@ struct App {
     /// Vertical scroll offset for the current slide
     scroll_offset: usize,
     /// Syntax highlighting theme set
-    #[allow(dead_code)]
     theme_set: ThemeSet,
     /// Syntax definitions
-    #[allow(dead_code)]
     syntax_set: SyntaxSet,
 }
 
@@ -227,7 +226,7 @@ fn parse_markdown_to_slides(
     let mut table_rows: Vec<Vec<String>> = Vec::new();
     let mut current_table_row: Vec<String> = Vec::new();
     let mut current_cell_content = String::new();
-    let mut in_table_header = false;
+    let mut _in_table_header = false;
 
     let theme = &theme_set.themes["base16-ocean.dark"];
 
@@ -534,10 +533,22 @@ fn parse_markdown_to_slides(
                     for row in &table_rows {
                         for (i, cell) in row.iter().enumerate() {
                             if i < col_widths.len() {
-                                col_widths[i] = col_widths[i].max(cell.len());
+                                col_widths[i] = col_widths[i].max(cell.width());
                             }
                         }
                     }
+                    
+                    // Add top border
+                    let mut top_border_spans = Vec::new();
+                    top_border_spans.push(Span::styled("┌", Style::default().fg(Color::Gray)));
+                    for (i, width) in col_widths.iter().enumerate() {
+                        top_border_spans.push(Span::styled("─".repeat(width + 2), Style::default().fg(Color::Gray)));
+                        if i < col_widths.len() - 1 {
+                            top_border_spans.push(Span::styled("┬", Style::default().fg(Color::Gray)));
+                        }
+                    }
+                    top_border_spans.push(Span::styled("┐", Style::default().fg(Color::Gray)));
+                    current_slide_lines.push(Line::from(top_border_spans));
                     
                     // Render table rows
                     for (row_idx, row) in table_rows.iter().enumerate() {
@@ -546,7 +557,9 @@ fn parse_markdown_to_slides(
                         
                         for (col_idx, cell) in row.iter().enumerate() {
                             let width = col_widths.get(col_idx).unwrap_or(&10);
-                            let padded_cell = format!("{:<width$}", cell, width = width);
+                            let cell_width = cell.width();
+                            let padding_needed = width.saturating_sub(cell_width);
+                            let padded_cell = format!("{}{}", cell, " ".repeat(padding_needed));
                             
                             line_spans.push(Span::styled(padded_cell, Style::default().fg(Color::White)));
                             line_spans.push(Span::styled(" │ ", Style::default().fg(Color::Gray)));
@@ -568,17 +581,29 @@ fn parse_markdown_to_slides(
                             current_slide_lines.push(Line::from(sep_spans));
                         }
                     }
+                    
+                    // Add bottom border
+                    let mut bottom_border_spans = Vec::new();
+                    bottom_border_spans.push(Span::styled("└", Style::default().fg(Color::Gray)));
+                    for (i, width) in col_widths.iter().enumerate() {
+                        bottom_border_spans.push(Span::styled("─".repeat(width + 2), Style::default().fg(Color::Gray)));
+                        if i < col_widths.len() - 1 {
+                            bottom_border_spans.push(Span::styled("┴", Style::default().fg(Color::Gray)));
+                        }
+                    }
+                    bottom_border_spans.push(Span::styled("┘", Style::default().fg(Color::Gray)));
+                    current_slide_lines.push(Line::from(bottom_border_spans));
                 }
                 
                 add_spacing(&mut current_slide_lines);
                 in_table = false;
-                in_table_header = false;
+                _in_table_header = false;
             }
             MarkdownEvent::Start(Tag::TableHead) => {
-                in_table_header = true;
+                _in_table_header = true;
             }
             MarkdownEvent::End(TagEnd::TableHead) => {
-                in_table_header = false;
+                _in_table_header = false;
             }
             MarkdownEvent::Start(Tag::TableRow) => {
                 current_table_row.clear();
