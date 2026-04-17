@@ -71,6 +71,8 @@ struct Args {
 ///
 /// Manages the collection of slides and tracks the current slide position.
 struct App {
+    /// Raw markdown content, retained so slides can be re-parsed on resize.
+    markdown_content: String,
     /// Collection of slide content as formatted text
     slides: Vec<Text<'static>>,
     /// Index of the currently displayed slide (0-based)
@@ -85,25 +87,34 @@ struct App {
 
 impl App {
     /// Creates a new App instance from markdown content.
-    ///
-    /// # Arguments
-    ///
-    /// * `markdown_content` - The raw markdown content to parse into slides
-    ///
-    /// # Returns
-    ///
-    /// A new App instance with slides parsed from the markdown content
-    fn new(markdown_content: &str, terminal_width: u16) -> Self {
+    fn new(markdown_content: String, terminal_width: u16) -> Self {
         let theme_set = ThemeSet::load_defaults();
         let syntax_set = SyntaxSet::load_defaults_newlines();
-        let slides = parse_markdown_to_slides(markdown_content, &theme_set, &syntax_set, terminal_width);
+        let slides =
+            parse_markdown_to_slides(&markdown_content, &theme_set, &syntax_set, terminal_width);
         App {
+            markdown_content,
             slides,
             current_slide: 0,
             scroll_offset: 0,
             theme_set,
             syntax_set,
         }
+    }
+
+    /// Re-parses slides for the new terminal width, preserving the current slide index.
+    fn resize(&mut self, new_width: u16) {
+        let slides = parse_markdown_to_slides(
+            &self.markdown_content,
+            &self.theme_set,
+            &self.syntax_set,
+            new_width,
+        );
+        if !slides.is_empty() {
+            self.current_slide = self.current_slide.min(slides.len() - 1);
+        }
+        self.scroll_offset = 0;
+        self.slides = slides;
     }
 
     /// Advances to the next slide if available.
@@ -122,6 +133,20 @@ impl App {
     fn prev_slide(&mut self) {
         if self.current_slide > 0 {
             self.current_slide -= 1;
+            self.scroll_offset = 0;
+        }
+    }
+
+    /// Jumps to the first slide.
+    fn goto_first(&mut self) {
+        self.current_slide = 0;
+        self.scroll_offset = 0;
+    }
+
+    /// Jumps to the last slide.
+    fn goto_last(&mut self) {
+        if !self.slides.is_empty() {
+            self.current_slide = self.slides.len() - 1;
             self.scroll_offset = 0;
         }
     }
@@ -222,36 +247,36 @@ fn parse_markdown_to_slides(
     let mut code_block_lang: Option<String> = None;
     let mut code_block_content = String::new();
     let mut in_table = false;
-    let mut in_list = false;
+    // Stack of list contexts: None = unordered, Some(n) = next number for ordered list
+    let mut list_stack: Vec<Option<u64>> = Vec::new();
     let mut table_rows: Vec<Vec<String>> = Vec::new();
+    let mut table_header_rows: usize = 0;
     let mut current_table_row: Vec<String> = Vec::new();
     let mut current_cell_content = String::new();
-    let mut _in_table_header = false;
 
     let theme = &theme_set.themes["base16-ocean.dark"];
 
-    let push_current_line = |lines: &mut Vec<Line<'static>>, spans: &mut Vec<Span<'static>>, is_h1: bool| {
-        if !spans.is_empty() {
-            let mut line = Line::from(std::mem::take(spans));
-            if is_h1 {
-                // Center the H1 line by calculating padding
-                let text_width: usize = line.spans.iter()
-                    .map(|span| span.content.chars().count())
-                    .sum();
-                let padding = if terminal_width as usize > text_width {
-                    (terminal_width as usize - text_width) / 2
-                } else {
-                    0
-                };
-                
-                if padding > 0 {
-                    let padding_span = Span::raw(" ".repeat(padding));
-                    line.spans.insert(0, padding_span);
+    // Inner width of the bordered Paragraph (terminal - 2 for left/right border columns).
+    let effective_width: usize = (terminal_width as usize).saturating_sub(2);
+
+    let push_current_line =
+        |lines: &mut Vec<Line<'static>>, spans: &mut Vec<Span<'static>>, is_h1: bool| {
+            if !spans.is_empty() {
+                let mut line = Line::from(std::mem::take(spans));
+                if is_h1 {
+                    let text_width: usize = line
+                        .spans
+                        .iter()
+                        .map(|span| span.content.as_ref().width())
+                        .sum();
+                    let padding = effective_width.saturating_sub(text_width) / 2;
+                    if padding > 0 {
+                        line.spans.insert(0, Span::raw(" ".repeat(padding)));
+                    }
                 }
+                lines.push(line);
             }
-            lines.push(line);
-        }
-    };
+        };
 
     let add_spacing = |lines: &mut Vec<Line<'static>>| {
         if !lines.is_empty() {
@@ -331,20 +356,34 @@ fn parse_markdown_to_slides(
                     add_spacing(&mut current_slide_lines);
                 }
             }
-            MarkdownEvent::Start(Tag::List(_)) => {
+            MarkdownEvent::Start(Tag::List(start)) => {
                 push_current_line(&mut current_slide_lines, &mut current_line_spans, false);
-                in_list = true;
+                list_stack.push(start);
             }
             MarkdownEvent::Start(Tag::Item) => {
-                current_line_spans.push(Span::styled("• ", Style::default().fg(Color::Yellow)));
+                // Indent nested list items by two spaces per nesting level past the first.
+                let depth = list_stack.len().saturating_sub(1);
+                if depth > 0 {
+                    current_line_spans.push(Span::raw(" ".repeat(depth * 2)));
+                }
+                let marker = match list_stack.last_mut() {
+                    Some(Some(n)) => {
+                        let marker = format!("{}. ", *n);
+                        *n += 1;
+                        marker
+                    }
+                    _ => "• ".to_string(),
+                };
+                current_line_spans
+                    .push(Span::styled(marker, Style::default().fg(Color::Yellow)));
             }
             MarkdownEvent::End(TagEnd::Item) => {
                 push_current_line(&mut current_slide_lines, &mut current_line_spans, false);
             }
             MarkdownEvent::End(TagEnd::List(_)) => {
-                if in_list {
+                list_stack.pop();
+                if list_stack.is_empty() {
                     add_spacing(&mut current_slide_lines);
-                    in_list = false;
                 }
             }
             MarkdownEvent::Start(Tag::Strong) => {
@@ -387,7 +426,14 @@ fn parse_markdown_to_slides(
             MarkdownEvent::End(TagEnd::CodeBlock) => {
                 in_code_block = false;
 
-                if let Some(lang) = &code_block_lang {
+                let lang_lower = code_block_lang.as_deref().map(|s| s.to_lowercase());
+                let is_lean = matches!(lang_lower.as_deref(), Some("lean") | Some("lean4"));
+
+                if is_lean {
+                    for line in highlight_lean4_code(&code_block_content) {
+                        current_slide_lines.push(line);
+                    }
+                } else if let Some(lang) = &code_block_lang {
                     // Try to find syntax by the language name first, then by common extensions
                     let syntax = syntax_set.find_syntax_by_token(lang)
                         .or_else(|| {
@@ -455,19 +501,25 @@ fn parse_markdown_to_slides(
                         let mut highlighter = HighlightLines::new(syntax, theme);
 
                         for line in LinesWithEndings::from(&code_block_content) {
+                            // syntect uses the trailing \n for context, but the \n must not
+                            // leak into ratatui spans (it would be rendered as a control char).
                             let ranges = highlighter
                                 .highlight_line(line, syntax_set)
                                 .unwrap_or_default();
                             let mut line_spans = Vec::new();
 
-                            // If highlighting fails or produces no ranges, preserve the original line
                             if ranges.is_empty() {
+                                let clean = line.trim_end_matches(['\n', '\r']).to_string();
                                 line_spans.push(Span::styled(
-                                    line.to_string(),
+                                    clean,
                                     Style::default().fg(Color::Green),
                                 ));
                             } else {
                                 for (style, text) in ranges {
+                                    let clean = text.trim_end_matches(['\n', '\r']);
+                                    if clean.is_empty() {
+                                        continue;
+                                    }
                                     let fg_color = Color::Rgb(
                                         style.foreground.r,
                                         style.foreground.g,
@@ -489,8 +541,7 @@ fn parse_markdown_to_slides(
                                             ratatui_style.add_modifier(Modifier::ITALIC);
                                     }
 
-                                    // Preserve the exact text including whitespace
-                                    line_spans.push(Span::styled(text.to_string(), ratatui_style));
+                                    line_spans.push(Span::styled(clean.to_string(), ratatui_style));
                                 }
                             }
 
@@ -522,6 +573,7 @@ fn parse_markdown_to_slides(
                 push_current_line(&mut current_slide_lines, &mut current_line_spans, false);
                 in_table = true;
                 table_rows.clear();
+                table_header_rows = 0;
             }
             MarkdownEvent::End(TagEnd::Table) => {
                 // Render the complete table
@@ -552,32 +604,69 @@ fn parse_markdown_to_slides(
                     
                     // Render table rows
                     for (row_idx, row) in table_rows.iter().enumerate() {
+                        let is_header_row = row_idx < table_header_rows;
+                        let cell_style = if is_header_row {
+                            Style::default()
+                                .fg(Color::White)
+                                .add_modifier(Modifier::BOLD)
+                        } else {
+                            Style::default().fg(Color::White)
+                        };
+
                         let mut line_spans = Vec::new();
                         line_spans.push(Span::styled("│ ", Style::default().fg(Color::Gray)));
-                        
+
                         for (col_idx, cell) in row.iter().enumerate() {
                             let width = col_widths.get(col_idx).unwrap_or(&10);
                             let cell_width = cell.width();
                             let padding_needed = width.saturating_sub(cell_width);
                             let padded_cell = format!("{}{}", cell, " ".repeat(padding_needed));
-                            
-                            line_spans.push(Span::styled(padded_cell, Style::default().fg(Color::White)));
+
+                            line_spans.push(Span::styled(padded_cell, cell_style));
                             line_spans.push(Span::styled(" │ ", Style::default().fg(Color::Gray)));
                         }
-                        
+
                         current_slide_lines.push(Line::from(line_spans));
-                        
-                        // Add separator line between all rows (except after the last row)
+
+                        // Use a heavier separator after the header row, lighter between body rows.
                         if row_idx < table_rows.len() - 1 {
+                            let is_header_boundary = row_idx + 1 == table_header_rows;
                             let mut sep_spans = Vec::new();
-                            sep_spans.push(Span::styled("├", Style::default().fg(Color::Gray)));
-                            for (i, width) in col_widths.iter().enumerate() {
-                                sep_spans.push(Span::styled("─".repeat(width + 2), Style::default().fg(Color::Gray)));
-                                if i < col_widths.len() - 1 {
-                                    sep_spans.push(Span::styled("┼", Style::default().fg(Color::Gray)));
+                            if is_header_boundary {
+                                sep_spans
+                                    .push(Span::styled("╞", Style::default().fg(Color::Gray)));
+                                for (i, width) in col_widths.iter().enumerate() {
+                                    sep_spans.push(Span::styled(
+                                        "═".repeat(width + 2),
+                                        Style::default().fg(Color::Gray),
+                                    ));
+                                    if i < col_widths.len() - 1 {
+                                        sep_spans.push(Span::styled(
+                                            "╪",
+                                            Style::default().fg(Color::Gray),
+                                        ));
+                                    }
                                 }
+                                sep_spans
+                                    .push(Span::styled("╡", Style::default().fg(Color::Gray)));
+                            } else {
+                                sep_spans
+                                    .push(Span::styled("├", Style::default().fg(Color::Gray)));
+                                for (i, width) in col_widths.iter().enumerate() {
+                                    sep_spans.push(Span::styled(
+                                        "─".repeat(width + 2),
+                                        Style::default().fg(Color::Gray),
+                                    ));
+                                    if i < col_widths.len() - 1 {
+                                        sep_spans.push(Span::styled(
+                                            "┼",
+                                            Style::default().fg(Color::Gray),
+                                        ));
+                                    }
+                                }
+                                sep_spans
+                                    .push(Span::styled("┤", Style::default().fg(Color::Gray)));
                             }
-                            sep_spans.push(Span::styled("┤", Style::default().fg(Color::Gray)));
                             current_slide_lines.push(Line::from(sep_spans));
                         }
                     }
@@ -597,13 +686,10 @@ fn parse_markdown_to_slides(
                 
                 add_spacing(&mut current_slide_lines);
                 in_table = false;
-                _in_table_header = false;
             }
-            MarkdownEvent::Start(Tag::TableHead) => {
-                _in_table_header = true;
-            }
+            MarkdownEvent::Start(Tag::TableHead) => {}
             MarkdownEvent::End(TagEnd::TableHead) => {
-                _in_table_header = false;
+                table_header_rows = table_rows.len();
             }
             MarkdownEvent::Start(Tag::TableRow) => {
                 current_table_row.clear();
@@ -624,6 +710,16 @@ fn parse_markdown_to_slides(
                     push_current_line(&mut current_slide_lines, &mut current_line_spans, false);
                 }
             }
+            MarkdownEvent::Rule => {
+                push_current_line(&mut current_slide_lines, &mut current_line_spans, false);
+                // Render a horizontal rule as a line of dashes spanning the inner width.
+                let rule_width = effective_width.max(4);
+                current_slide_lines.push(Line::from(Span::styled(
+                    "─".repeat(rule_width),
+                    Style::default().fg(Color::DarkGray),
+                )));
+                add_spacing(&mut current_slide_lines);
+            }
             _ => {}
         }
     }
@@ -636,6 +732,287 @@ fn parse_markdown_to_slides(
     }
 
     slides
+}
+
+/// Lean 4 keywords — declarations, modifiers, and structural forms.
+const LEAN4_KEYWORDS: &[&str] = &[
+    "def", "theorem", "lemma", "example", "instance", "class", "structure",
+    "inductive", "coinductive", "abbrev", "axiom", "constant", "opaque",
+    "namespace", "section", "end", "open", "import", "export", "universe",
+    "universes", "variable", "variables", "notation", "infix", "infixl",
+    "infixr", "prefix", "postfix", "syntax", "macro", "macro_rules", "elab",
+    "elab_rules", "builtin_initialize", "initialize", "deriving", "extends",
+    "mutual", "where", "do", "if", "then", "else", "match", "with", "let",
+    "in", "fun", "λ", "have", "show", "from", "suffices", "calc", "return",
+    "unless", "for", "while", "try", "catch", "finally", "throw", "break",
+    "continue", "at", "by",
+    "private", "protected", "partial", "unsafe", "noncomputable", "nonrec",
+    "scoped", "local", "set_option", "attribute", "@[simp]", "#check",
+    "#eval", "#print", "#reduce",
+];
+
+/// Lean 4 tactics commonly seen inside `by` blocks.
+const LEAN4_TACTICS: &[&str] = &[
+    "rfl", "simp", "simp_all", "simp_rw", "rw", "exact", "apply", "intro",
+    "intros", "constructor", "induction", "cases", "rcases", "rintro",
+    "obtain", "use", "refine", "refine'", "tauto", "aesop", "omega",
+    "linarith", "nlinarith", "polyrith", "positivity", "ring", "ring_nf",
+    "field_simp", "norm_num", "norm_cast", "push_cast", "decide", "trivial",
+    "assumption", "contradiction", "sorry", "admit", "change", "split",
+    "left", "right", "unfold", "symm", "trans", "ext", "funext", "propext",
+    "push_neg", "specialize", "exact?", "apply?", "hint", "conv", "skip",
+    "first", "all_goals", "any_goals", "repeat", "iterate", "solve",
+    "solve_by_elim", "fin_cases", "interval_cases", "choose", "subst",
+    "subst_vars", "clear", "rename_i", "rename", "revert", "generalize",
+    "nlinarith", "done",
+];
+
+/// Lean 4 built-in types and Sort-family keywords.
+const LEAN4_TYPES: &[&str] = &[
+    "Prop", "Type", "Sort", "Nat", "Int", "Rat", "Real", "Bool", "String",
+    "Char", "List", "Array", "Option", "Unit", "Empty", "Fin", "Set",
+    "Subtype", "Sum", "Prod", "Sigma", "PSigma", "IO",
+];
+
+fn lean4_style(word: &str) -> Option<Style> {
+    if LEAN4_KEYWORDS.contains(&word) {
+        Some(
+            Style::default()
+                .fg(Color::Magenta)
+                .add_modifier(Modifier::BOLD),
+        )
+    } else if LEAN4_TACTICS.contains(&word) {
+        Some(Style::default().fg(Color::LightBlue))
+    } else if LEAN4_TYPES.contains(&word) {
+        Some(
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        )
+    } else {
+        None
+    }
+}
+
+/// Highlights a Lean 4 source code string into per-line styled spans.
+///
+/// Handles line comments (`-- ...`), nested block comments (`/- ... -/`),
+/// string literals, numeric literals, attribute forms like `@[simp]`, common
+/// unicode operators (∀, ∃, λ, →, ↔, ∧, ∨, etc.), keywords, tactics, and
+/// built-in types. Anything else is emitted with the default foreground.
+fn highlight_lean4_code(content: &str) -> Vec<Line<'static>> {
+    let comment_style = Style::default()
+        .fg(Color::DarkGray)
+        .add_modifier(Modifier::ITALIC);
+    let string_style = Style::default().fg(Color::LightGreen);
+    let number_style = Style::default().fg(Color::LightYellow);
+    let attribute_style = Style::default().fg(Color::LightMagenta);
+    let operator_style = Style::default()
+        .fg(Color::Magenta)
+        .add_modifier(Modifier::BOLD);
+    let default_style = Style::default().fg(Color::White);
+
+    let mut lines: Vec<Line<'static>> = Vec::new();
+    let mut block_comment_depth: u32 = 0;
+
+    for line_text in content.split('\n') {
+        let chars: Vec<char> = line_text.chars().collect();
+        let mut spans: Vec<Span<'static>> = Vec::new();
+        let mut i = 0;
+
+        // If we carried a block comment from the previous line, continue consuming it.
+        if block_comment_depth > 0 {
+            let start = i;
+            while i < chars.len() && block_comment_depth > 0 {
+                if chars[i] == '/' && i + 1 < chars.len() && chars[i + 1] == '-' {
+                    block_comment_depth += 1;
+                    i += 2;
+                } else if chars[i] == '-' && i + 1 < chars.len() && chars[i + 1] == '/' {
+                    block_comment_depth -= 1;
+                    i += 2;
+                } else {
+                    i += 1;
+                }
+            }
+            if i > start {
+                let s: String = chars[start..i].iter().collect();
+                spans.push(Span::styled(s, comment_style));
+            }
+        }
+
+        while i < chars.len() {
+            let c = chars[i];
+
+            // Line comment: `-- ...` to end of line.
+            if c == '-' && i + 1 < chars.len() && chars[i + 1] == '-' {
+                let s: String = chars[i..].iter().collect();
+                spans.push(Span::styled(s, comment_style));
+                break;
+            }
+
+            // Block comment: `/- ... -/` (possibly nested, possibly multi-line).
+            if c == '/' && i + 1 < chars.len() && chars[i + 1] == '-' {
+                let start = i;
+                block_comment_depth = 1;
+                i += 2;
+                while i < chars.len() && block_comment_depth > 0 {
+                    if chars[i] == '/' && i + 1 < chars.len() && chars[i + 1] == '-' {
+                        block_comment_depth += 1;
+                        i += 2;
+                    } else if chars[i] == '-' && i + 1 < chars.len() && chars[i + 1] == '/' {
+                        block_comment_depth -= 1;
+                        i += 2;
+                    } else {
+                        i += 1;
+                    }
+                }
+                let s: String = chars[start..i].iter().collect();
+                spans.push(Span::styled(s, comment_style));
+                continue;
+            }
+
+            // String literal.
+            if c == '"' {
+                let start = i;
+                i += 1;
+                while i < chars.len() {
+                    if chars[i] == '\\' && i + 1 < chars.len() {
+                        i += 2;
+                        continue;
+                    }
+                    if chars[i] == '"' {
+                        i += 1;
+                        break;
+                    }
+                    i += 1;
+                }
+                let s: String = chars[start..i].iter().collect();
+                spans.push(Span::styled(s, string_style));
+                continue;
+            }
+
+            // Char literal: `'a'`, `'\n'`, etc. (bounded, safe to treat as string-colored).
+            if c == '\'' && i + 1 < chars.len() {
+                let start = i;
+                i += 1;
+                if chars[i] == '\\' && i + 1 < chars.len() {
+                    i += 2;
+                } else {
+                    i += 1;
+                }
+                if i < chars.len() && chars[i] == '\'' {
+                    i += 1;
+                    let s: String = chars[start..i].iter().collect();
+                    spans.push(Span::styled(s, string_style));
+                    continue;
+                }
+                // Not a char literal — rewind and treat as default.
+                i = start;
+                let mut s = String::new();
+                s.push(chars[i]);
+                spans.push(Span::styled(s, default_style));
+                i += 1;
+                continue;
+            }
+
+            // Attribute form `@[...]`.
+            if c == '@' && i + 1 < chars.len() && chars[i + 1] == '[' {
+                let start = i;
+                i += 2;
+                while i < chars.len() && chars[i] != ']' {
+                    i += 1;
+                }
+                if i < chars.len() {
+                    i += 1;
+                }
+                let s: String = chars[start..i].iter().collect();
+                spans.push(Span::styled(s, attribute_style));
+                continue;
+            }
+
+            // Numeric literal.
+            if c.is_ascii_digit() {
+                let start = i;
+                while i < chars.len() && (chars[i].is_ascii_digit() || chars[i] == '_') {
+                    i += 1;
+                }
+                if i < chars.len() && chars[i] == '.'
+                    && i + 1 < chars.len()
+                    && chars[i + 1].is_ascii_digit()
+                {
+                    i += 1;
+                    while i < chars.len() && (chars[i].is_ascii_digit() || chars[i] == '_') {
+                        i += 1;
+                    }
+                }
+                let s: String = chars[start..i].iter().collect();
+                spans.push(Span::styled(s, number_style));
+                continue;
+            }
+
+            // Identifier / keyword.
+            if c.is_alphabetic() || c == '_' {
+                let start = i;
+                while i < chars.len()
+                    && (chars[i].is_alphanumeric() || chars[i] == '_' || chars[i] == '\'')
+                {
+                    i += 1;
+                }
+                let word: String = chars[start..i].iter().collect();
+                let style = lean4_style(word.as_str()).unwrap_or(default_style);
+                spans.push(Span::styled(word, style));
+                continue;
+            }
+
+            // Common unicode operators used in Lean 4.
+            if matches!(
+                c,
+                '∀' | '∃'
+                    | 'λ'
+                    | '→'
+                    | '←'
+                    | '↔'
+                    | '⇒'
+                    | '∧'
+                    | '∨'
+                    | '¬'
+                    | '≤'
+                    | '≥'
+                    | '≠'
+                    | '≡'
+                    | '∈'
+                    | '∉'
+                    | '⊆'
+                    | '⊂'
+                    | '∪'
+                    | '∩'
+                    | '⟨'
+                    | '⟩'
+                    | '⊢'
+                    | '⊤'
+                    | '⊥'
+                    | '∘'
+                    | '∅'
+                    | '×'
+            ) {
+                let mut s = String::new();
+                s.push(c);
+                spans.push(Span::styled(s, operator_style));
+                i += 1;
+                continue;
+            }
+
+            // Default character.
+            let mut s = String::new();
+            s.push(c);
+            spans.push(Span::styled(s, default_style));
+            i += 1;
+        }
+
+        lines.push(Line::from(spans));
+    }
+
+    lines
 }
 
 /// Renders the user interface for the slideshow.
@@ -676,7 +1053,10 @@ fn ui(f: &mut Frame, app: &App) {
 
     f.render_widget(paragraph, chunks[0]);
 
-    let info_text = format!(" Slide {} | ← → Navigate | ↑ ↓ Scroll | q Quit ", app.slide_info());
+    let info_text = format!(
+        " Slide {} | ← → Navigate | ↑ ↓ Scroll | Home/End First/Last | q Quit ",
+        app.slide_info()
+    );
     let info = Paragraph::new(info_text)
         .block(Block::default().borders(Borders::ALL))
         .style(Style::default().fg(Color::Yellow));
@@ -709,15 +1089,21 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<Stdout>>, mut app: App) -> i
     loop {
         terminal.draw(|f| ui(f, &app))?;
 
-        if let Event::Key(key) = event::read()? {
-            match key.code {
+        match event::read()? {
+            Event::Key(key) => match key.code {
                 KeyCode::Char('q') | KeyCode::Esc => break,
                 KeyCode::Right | KeyCode::Char('l') | KeyCode::Char(' ') => app.next_slide(),
                 KeyCode::Left | KeyCode::Char('h') => app.prev_slide(),
                 KeyCode::Down | KeyCode::Char('j') => app.scroll_down(),
                 KeyCode::Up | KeyCode::Char('k') => app.scroll_up(),
+                KeyCode::PageDown => app.next_slide(),
+                KeyCode::PageUp => app.prev_slide(),
+                KeyCode::Home => app.goto_first(),
+                KeyCode::End => app.goto_last(),
                 _ => {}
-            }
+            },
+            Event::Resize(w, _) => app.resize(w),
+            _ => {}
         }
     }
     Ok(())
@@ -750,7 +1136,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let mut terminal = Terminal::new(backend)?;
 
     let terminal_size = terminal.size()?;
-    let app = App::new(&markdown_content, terminal_size.width);
+    let app = App::new(markdown_content, terminal_size.width);
     let res = run_app(&mut terminal, app);
 
     disable_raw_mode()?;

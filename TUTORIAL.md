@@ -16,11 +16,15 @@ cargo run TUTORIAL.md
 
 | Key | Action |
 |-----|--------|
-| `→`, `l`, `Space` | Next slide |
-| `←`, `h` | Previous slide |
+| `→`, `l`, `Space`, `PageDown` | Next slide |
+| `←`, `h`, `PageUp` | Previous slide |
 | `↑`, `k` | Scroll up within slide |
 | `↓`, `j` | Scroll down within slide |
+| `Home` | Jump to first slide |
+| `End` | Jump to last slide |
 | `q`, `Esc` | Quit |
+
+Resizing your terminal is safe — slides re-render automatically and H1 titles stay centered at the new width.
 
 # Slide Creation Basics
 
@@ -102,12 +106,26 @@ Presentrs renders markdown lists with attractive bullet points:
 
 You can combine lists with other elements:
 
-• **Bold items** for emphasis
-• *Italic items* for style
-• `Code items` for technical content
-• Regular items for normal text
+- **Bold items** for emphasis
+- *Italic items* for style
+- `Code items` for technical content
+- Regular items for normal text
 
-Lists automatically get proper spacing and the distinctive yellow bullet character (•).
+## Numbered Lists
+
+Numbered lists render with the actual number — not a bullet — and preserve their starting index:
+
+1. First step
+2. Second step
+3. Third step
+
+Nested lists are indented two spaces per level:
+
+- Outer item
+  - Inner item
+  - Another inner item
+
+Lists automatically get proper spacing. Unordered items use the yellow bullet character (•); ordered items use `N. ` markers.
 
 # Code Blocks and Syntax Highlighting  
 
@@ -231,6 +249,34 @@ func main() {
 }
 ```
 
+# Lean 4 Proofs
+
+**Bonus slide** - Presentrs ships a dedicated Lean 4 highlighter.
+
+Fence a block with `lean` or `lean4` to activate it:
+
+```lean4
+import Mathlib.Data.Nat.Basic
+
+namespace Demo
+
+/-- Addition on `Nat` is commutative. -/
+theorem add_comm (a b : Nat) : a + b = b + a := by
+  induction a with
+  | zero      => simp
+  | succ n ih => simp [Nat.succ_add, ih]
+
+@[simp] def double (n : Nat) : Nat := n + n
+
+example : ∀ n : Nat, double n = 2 * n := by
+  intro n
+  simp [double, Nat.two_mul]
+
+end Demo
+```
+
+The highlighter colors keywords (`theorem`, `def`, `by`, `match`), tactics (`simp`, `rw`, `induction`, `intro`), built-in types (`Nat`, `Prop`, `Type`), unicode operators (`∀`, `∃`, `λ`, `→`, `↔`, `⟨⟩`), string and numeric literals, line/block comments (`-- …`, `/- … -/`), and attributes (`@[simp]`).
+
 # Table Features
 
 **This is Slide 9** - demonstrating table rendering
@@ -279,6 +325,9 @@ func main() {
 ## Functional Languages
 - **haskell/hs, elixir/ex, erlang/erl, clojure/clj, ocaml, fsharp/f#, lisp, scheme**
 
+## Proof Assistants
+- **lean/lean4** (custom highlighter — not from syntect)
+
 ## Mobile Development
 - **swift, dart**
 
@@ -300,13 +349,17 @@ func main() {
 ## Keyboard Shortcuts Reference
 
 ### Navigation
-- `→` `l` `Space` - Next slide (three ways!)
-- `←` `h` - Previous slide  
-- `q` `Esc` - Quit application
+- `→` `l` `Space` `PageDown` — Next slide
+- `←` `h` `PageUp` — Previous slide
+- `Home` / `End` — Jump to first / last slide
+- `q` `Esc` — Quit
 
 ### Scrolling (for long slides)
-- `↑` `k` - Scroll up within current slide
-- `↓` `j` - Scroll down within current slide
+- `↑` `k` — Scroll up within current slide
+- `↓` `j` — Scroll down within current slide
+
+### Terminal resize
+Resize your window at any time — Presentrs re-parses the current markdown against the new width so H1 titles remain centered.
 
 ## Pro Tips
 
